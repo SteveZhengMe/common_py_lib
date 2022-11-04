@@ -7,7 +7,7 @@ with open("README.md", "r", encoding='utf-8') as fh:
 with open('requirements.txt', "r", encoding='utf-8') as f:
     requirements = f.read().splitlines()
 
-version = "1.5.0"
+version = "1.5.1"
 
 setuptools.setup(
     name="common-py-lib",
