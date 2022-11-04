@@ -1,6 +1,7 @@
-# README #
+# Python libraries #
 
-Python libraries
+![Release PyPi](https://github.com/SteveZhengMe/common_py_lib/actions/workflows/release.yml/badge.svg)
+[![PyPI version](https://badge.fury.io/py/common-py-lib.svg)](https://badge.fury.io/py/common-py-lib)
 
 ## Command line ##
 
@@ -10,5 +11,6 @@ Python libraries
 - Use the package (You need to login to the AWS CodeArtifacts using CLI): `pip install common-py-lib`
 
 ## Change Notes
+
 - 2022-11-02 (v1.4): Initial release with logging and aws services support
 - 2022-11-04 (v1.5.0): Easy maintenance of the Version
