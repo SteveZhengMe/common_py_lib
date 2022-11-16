@@ -1,6 +1,8 @@
+from datetime import datetime
 import logging
 import os
 import unittest
+import json
 from mylogging import *
 from myaws import *
 
@@ -53,14 +55,37 @@ class AWSUnitTest(unittest.TestCase):
         pass
     
     def test_sns(self):
-        sns = SNS()
-        self.assertTrue(sns is not None)
+        messageId = SNS(aws_region='us-east-1',for_testing=True).init_session(aws_profile="dev-admin").publish("YOUR_TOPIC", "test message")
+        self.assertTrue(len(messageId) > 0)
     
     def test_cloudwatch(self):
-        cw = CloudWatch()
-        self.assertTrue(cw is not None)
+        cw = CloudWatch(for_testing=True).init_session(aws_profile="dev-admin")
+        current_datetime = datetime.now()
+        for i in range(5):
+            cw.ensure_log_group_stream_exist("delete_me", "aws_library_test")
+            response_token = cw.put_log_event("delete_me", "aws_library_test", f"test message at {current_datetime}")
+            self.assertTrue(response_token is not None)
     
     def test_secretManager(self):
-        pass
-        # sm = SecretManager()
-        # self.assertTrue(sm is not None)
+        sm = SecretManager().init_session(aws_profile="dev-admin")
+        secret = sm.get_secret("YOUR_SECRET_NAME")
+        self.assertTrue(len(secret) > 0)
+        
+        parameter = sm.get_parameters(["Current-Environment-Name"])
+        self.assertEqual(parameter["Current-Environment-Name"], "Dev")
+        
+        parameter = sm.get_parameters(["Current-Environment-Name","Current-Region-Name","Not-Exist-Parameter"])
+        self.assertEqual(parameter, {"Current-Environment-Name": "Dev", "Current-Region-Name": "us-east-1", "Not-Exist-Parameter": None})
+        
+        returned = sm.replace_by_secrets(
+            {  
+                'user': '${mysql-username}',  
+                'password': '${mysql-password}',  
+                'host': '${mysql-host}',  
+                'database': 'db_${mysql-db_name}_1',
+                'raise_on_warnings':True,
+                'port': '${port}'
+            },
+            ["YOUR_SECRET_NAME_1","YOUR_SECRET_NAME_2"]
+        )
+        self.assertTrue("$" not in json.dumps(returned) )

@@ -14,3 +14,4 @@
 
 - 2022-11-02 (v1.4): Initial release with logging and aws services support
 - 2022-11-04 (v1.5.0): Easy maintenance of the Version
+- 2022-11-15 (v1.5.0): Refactor logging and AWS helper

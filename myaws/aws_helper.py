@@ -2,82 +2,77 @@
 
 import json
 import os
-import base64
 import time
 import boto3
-from mylogging import *
+import re
+
+class AbsAws():
+    aws_session = None
+    def init_session(self, region_name=None, aws_profile=None, key=None, secret=None, token=None):
+        if self.aws_session is None:
+            region_name = "us-east-1" if region_name is None else region_name
+
+            if aws_profile is not None:
+                self.aws_session = boto3.Session(profile_name=aws_profile, region_name=region_name)
+            else:
+                if key is not None and secret is not None:
+                    self.aws_session = boto3.Session(aws_access_key_id=key, aws_secret_access_key=secret, aws_session_token=token, region_name=region_name)
+                else:
+                    self.aws_session = boto3.Session(region_name=region_name)
+        return self
+
+    def get_session(self):
+        return self.aws_session
 
 #################### SecretManager ####################
-# TODO: Refactor, don't use Lambda
-class SecretManager():
-    def __init__(self, aws_account_id=None, aws_region=None):
-        self.aws_logger = getLogger("my-aws")
-        if aws_region is None:
-            self.aws_region = os.environ.get("AWS_DEFAULT_REGION","")
-        else:
-            self.aws_region = aws_region
-        
-        if aws_account_id is None:
-            self.aws_account_id = os.environ.get("AWS_ACCOUNT_ID","")
-        else:
-            self.aws_account_id = aws_account_id
+class SecretManager(AbsAws):
+    def __init__(self):
+        pass
 
-    def get_secret(self, config_json, customized_secret_name=None, customized_lambda_function_name=None):
-        # If there is the value in the parameter, use it. Otherwise use the value in the environment variable
-        if customized_secret_name is None:
-            secret_name = os.environ.get("SecretName","")
-        else:
-            secret_name = customized_secret_name
-            
-        if customized_lambda_function_name is None:
-            lambda_function_name = os.environ.get("SecretsFunctionName","")
-        else:
-            lambda_function_name = customized_lambda_function_name
+    def replace_by_secrets(self, source, secret_name_list):
+        secrets_dict = {}
+        for secret_name in secret_name_list:
+            secrets_dict.update(self.get_secret(secret_name))
         
-        if len(secret_name) > 0 and len(lambda_function_name) > 0 and len(self.aws_account_id) > 0 and len(self.aws_region) > 0:
-            # Get the secrets    
-            payload = {
-                'secret': secret_name,
-                'body': base64.b64encode(json.dumps(config_json).encode('utf-8')).decode('utf-8')
-            }
+        target = source.copy()
+        for key, value in target.items():
+            # replace the value between ${ and } with the same key in secrets_dict using regex pattern
+            if isinstance(value, str):
+                for secret_key, secret_value in secrets_dict.items():
+                    if f"${{{secret_key}}}" in value:
+                        target[key] = re.sub(f"\${{{secret_key}}}", str(secret_value), value)
+        return target
+    
+    def get_secret(self, secret_name):
+        secret_client = self.get_session().client('secretsmanager')
+        secret_is_found = len(secret_client.list_secrets(Filters=[{'Key': 'name', 'Values': [secret_name]}])['SecretList']) > 0
+        if secret_is_found:
+            response = secret_client.get_secret_value(SecretId=secret_name)
+            return json.loads(response['SecretString'])
 
-            secrets_response = boto3.client("lambda").invoke(
-                FunctionName = f"arn:aws:lambda:{self.aws_region}:{self.aws_account_id}:function:{lambda_function_name}",
-                InvocationType = "RequestResponse",
-                Payload=json.dumps(payload)
-            )
-            secret_content = secrets_response["Payload"].read().decode('utf-8')
-
-            if secrets_response["StatusCode"] == 200:
-                return json.loads(base64.b64decode(secret_content).decode('utf-8'))
-            else:
-                self.aws_logger.warning(f"Failed to get secret {secret_name} in {lambda_function_name}, ({self.aws_account_id}@{self.aws_region})")
-        else:
-            self.aws_logger.error(f"secret name, function name, account id or region is not set, secret_name={secret_name}, function_name={lambda_function_name}, account_id={self.aws_account_id}, region={self.aws_region}")
-        
         return None
 
+    def get_parameters(self, parameter_name_list):
+        parameter_client = self.get_session().client('ssm')
+        # return a dict of parameter and value pairs
+        response = {parameter['Name']: parameter['Value'] for parameter in parameter_client.get_parameters(Names=parameter_name_list, WithDecryption=True)['Parameters']}
+        # find the items in parameter_name_list that are not in the response and set the value to None
+        response.update({parameter_name: None for parameter_name in parameter_name_list if parameter_name not in response})
+        return response
+
 #################### SNS ####################
-class SNS():
+class SNS(AbsAws):
     def __init__(self, aws_account_id=None, aws_region=None, for_testing=False):
-        self.aws_logger = getLogger("my-aws")
-        if for_testing:
-            self.adding_testing_message = "[[IGNORE THIS MESSAGE, IT'S FOR TESTING]] >>>>> "
-        else:
-            self.adding_testing_message = ""
-
-        if aws_account_id is None:
-            self.aws_account_id = os.environ.get("AWS_ACCOUNT_ID","")
-        else:
-            self.aws_account_id = aws_account_id
+        self.adding_testing_message = "[[IGNORE THIS MESSAGE, IT'S FOR TESTING]] >>>>> " if for_testing else ""
+        self.aws_region = os.environ.get("AWS_DEFAULT_REGION","") if aws_region is None else aws_region
+        self.aws_account_id = os.environ.get("AWS_ACCOUNT_ID","") if aws_account_id is None else aws_account_id
         
-        if aws_region is None:
-            self.aws_region = os.environ.get("AWS_DEFAULT_REGION","")
-        else:
-            self.aws_region = aws_region
-
     def publish(self, topic_name, message):
-        sns_client = boto3.client('sns')
+        # get the current call's account id if it's not provided
+        if self.aws_account_id is None or self.aws_account_id == "":
+            self.aws_account_id = self.get_session().client('sts').get_caller_identity()['Account']
+            
+        sns_client = self.get_session().client('sns')
         
         response = sns_client.publish(
             TopicArn=f"arn:aws:sns:{self.aws_region}:{self.aws_account_id}:{topic_name}",
@@ -86,13 +81,77 @@ class SNS():
         return response['MessageId']
 
 #################### CloudWatch ####################
-class CloudWatch():
+class CloudWatch(AbsAws):
     def __init__(self, for_testing=False):
         if for_testing:
             self.adding_testing_message = "[[IGNORE THIS MESSAGE, IT'S FOR TESTING]] >>>>> "
         else:
             self.adding_testing_message = ""
+        
+        self.unsure_log_stream_exist = True
+        
+    def if_log_group_exists(self, log_group_name):
+        log_client = self.get_session().client('logs')
+        log_group_response = log_client.describe_log_groups(
+            logGroupNamePrefix=log_group_name,
+            limit=1
+        )
+        return len(log_group_response['logGroups']) > 0
+    
+    def if_log_stream_exists(self, log_group_name, log_stream_name):
+        log_client = self.get_session().client('logs')
+        log_stream_response = log_client.describe_log_streams(
+            logGroupName=log_group_name,
+            logStreamNamePrefix=log_stream_name,
+            limit=1
+        )
+        return len(log_stream_response['logStreams']) > 0
+    
+    def ensure_log_group_stream_exist(self, log_group_name, log_stream_name,retention_in_days=10):
+        if self.unsure_log_stream_exist:
+            if_log_group_exists = self.if_log_group_exists(log_group_name)
+            if_log_stream_exists = False
+            
+            if if_log_group_exists:
+                if_log_stream_exists = self.if_log_stream_exists(log_group_name, log_stream_name)
+            
+            if not if_log_stream_exists or not if_log_group_exists:
+                log_client = self.get_session().client('logs')
+                check_counter = 20
+                # create the log group
+                if not if_log_group_exists:
+                    log_client.create_log_group(
+                        logGroupName=log_group_name
+                    )
+                    # check if the log group is created every 100 milliseconds for 2 seconds
+                    for i in range(check_counter):
+                        if self.if_log_group_exists(log_group_name):
+                            break
+                        time.sleep(0.1)
+                    
+                    # set retention
+                    retention_array = [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 2192, 2557, 2922, 3288, 3653]
+                    # find the closest retention_in_days within the retention_array
+                    retention_in_days = retention_array[min(range(len(retention_array)), key = lambda i: abs(retention_array[i]-retention_in_days))]
+                    log_client.put_retention_policy(
+                        logGroupName=log_group_name,
+                        retentionInDays=retention_in_days
+                    )
+                
+                # create the log stream
+                if not if_log_stream_exists:
+                    log_client.create_log_stream(
+                        logGroupName=log_group_name,
+                        logStreamName=log_stream_name
+                    )
+                    # check if the log group is created every 100 milliseconds for 2 seconds
+                    for i in range(check_counter):
+                        if self.if_log_stream_exists(log_group_name, log_stream_name):
+                            break
+                        time.sleep(0.1)
 
+            self.unsure_log_stream_exist = False
+    
     def put_log_event(self, log_group_name, log_stream_name, message):
         # create a single log event as a list
         return self.put_log_events_list(log_group_name, log_stream_name, [message])
@@ -108,7 +167,8 @@ class CloudWatch():
                 'message':self.adding_testing_message + message
             })
         
-        logs_client = boto3.client('logs')
+        logs_client = self.get_session().client('logs')
+        
         # push the log event to cloudwatch
         # get the sequence token by exactly matching the log stream name
         available_log_streams = logs_client.describe_log_streams(
@@ -156,10 +216,8 @@ class CloudWatch():
         self.put_metric_list(namespace, [metric_data])
 
     def put_metric_list(self,namespace,metric_data_list):
-        metric_client = boto3.client('cloudwatch')
+        metric_client = self.get_session().client('cloudwatch')
         metric_client.put_metric_data(
             Namespace=namespace,
             MetricData=metric_data_list
         )
-
-    
