@@ -15,4 +15,4 @@
 - 2022-11-02 (v1.4): Initial release with logging and aws services support
 - 2022-11-04 (v1.5.0): Easy maintenance of the Version
 - 2022-11-15 (v1.6.0): Refactor logging and AWS helper
-- 2022-11-15 (v1.7.0): Add AppConfig support
+- 2022-12-28 (v1.7.0): Add AppConfig support
