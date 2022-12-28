@@ -89,3 +89,14 @@ class AWSUnitTest(unittest.TestCase):
             ["YOUR_SECRET_NAME_1","YOUR_SECRET_NAME_2"]
         )
         self.assertTrue("$" not in json.dumps(returned) )
+    
+    def test_appConfig(self):
+        appConfig = AppConfig(
+            application="[application]", 
+            app_profile="[profile]",
+            environment="[environment]"
+        ).init_session(aws_profile="dev-admin")
+        
+        config = appConfig.get_config()
+        # Replace the above with your own config
+        #self.assertTrue(config["error"] is None)
