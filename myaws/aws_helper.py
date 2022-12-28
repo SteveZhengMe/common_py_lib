@@ -3,8 +3,9 @@
 import json
 import os
 import time
-import boto3
+import boto3, botocore
 import re
+from datetime import datetime, timedelta
 
 class AbsAws():
     aws_session = None
@@ -221,3 +222,62 @@ class CloudWatch(AbsAws):
             Namespace=namespace,
             MetricData=metric_data_list
         )
+
+class AppConfig(AbsAws):
+    def __init__(self, application, app_profile, environment, cached_seconds=2):
+        self.application = application
+        self.app_profile = app_profile
+        self.environment = environment
+        self.cached_seconds = cached_seconds
+        
+        # cached instance variables
+        self.config_token = None
+        self.token_expiration_time = None
+        self.last_retrieved = None
+        self.last_config = None
+        self.client = None
+    
+    def load_client(self):
+        if self.client is None:
+            self.client = self.get_session().client("appconfigdata")
+        return self.client
+    
+    def pull_config(self):
+        try:
+            if not self.config_token or datetime.now() >= self.token_expiration_time:
+                start_session_response = self.load_client().start_configuration_session(
+                    ApplicationIdentifier=self.application,
+                    EnvironmentIdentifier=self.environment,
+                    ConfigurationProfileIdentifier=self.app_profile
+                )
+                self.config_token = start_session_response["InitialConfigurationToken"]
+
+            get_config_response = self.load_client().get_latest_configuration(
+                ConfigurationToken=self.config_token
+            )
+            self.config_token = get_config_response["NextPollConfigurationToken"]
+            self.token_expiration_time = datetime.now() + timedelta(hours=23, minutes=59)
+            content = get_config_response["Configuration"].read()
+            if content:
+                self.last_config = json.loads(content.decode("utf-8"))
+                return (self.last_config,None)
+        except botocore.exceptions.ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                return (None, f"Resource Not Found ({error.response['Error']['Message']}): {self.application}-{self.app_profile}-{self.environment}")
+            elif error.response["Error"]["Code"] == "BadRequestException":
+                return (None, f"Bad Request ({error.response['Error']['Message']})")
+            else:
+                return (None, f"{error.response['Error']['Code']}: {error.response['Error']['Message']}")
+        except json.JSONDecodeError as error:
+            return (None, f"JSON Decode Error: {error.msg}")
+
+    def get_config(self):
+        if self.last_retrieved == None or datetime.now() - self.last_retrieved > timedelta(seconds=self.cached_seconds):
+            self.last_retrieved = datetime.now()
+            config_with_code = self.pull_config()
+            if config_with_code[1] != None:
+                return {"error": config_with_code[1]}
+            else:
+                return config_with_code[0]
+        else:
+            return self.last_config
