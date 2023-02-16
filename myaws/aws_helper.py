@@ -1,4 +1,11 @@
-# Every AWS service is a class, the relevant methods will be included in the class
+"""
+Every AWS service is a class, the relevant methods are included. 
+Classes list:
+- SecretManager: get secrets from AWS Secret Manager or parameters from AWS SSM Parameter Store
+- SNS: publish message to SNS topic
+- CloudWatch: put log to CloudWatch and add metric to CloudWatch
+- AppConfig: get configuration from AWS AppConfig
+"""
 
 import json
 import os
@@ -8,6 +15,9 @@ import re
 from datetime import datetime, timedelta
 
 class AbsAws():
+    """
+    Abstract class for AWS services
+    """
     aws_session = None
     def init_session(self, region_name=None, aws_profile=None, key=None, secret=None, token=None):
         if self.aws_session is None:
@@ -25,12 +35,16 @@ class AbsAws():
     def get_session(self):
         return self.aws_session
 
-#################### SecretManager ####################
 class SecretManager(AbsAws):
     def __init__(self):
         pass
 
     def replace_by_secrets(self, source, secret_name_list):
+        """
+        Replace the value between ${ and } with the same key in secret_name_list
+        @param source: a dict of the original data (some of the values may contain ${ and })
+        @param secret_name_list: a list of secret names may appear in the source between ${ and }
+        """
         secrets_dict = {}
         for secret_name in secret_name_list:
             secrets_dict.update(self.get_secret(secret_name))
@@ -45,6 +59,9 @@ class SecretManager(AbsAws):
         return target
     
     def get_secret(self, secret_name):
+        """
+        Return the secret value from AWS Secret Manager
+        """
         secret_client = self.get_session().client('secretsmanager')
         secret_is_found = len(secret_client.list_secrets(Filters=[{'Key': 'name', 'Values': [secret_name]}])['SecretList']) > 0
         if secret_is_found:
@@ -54,6 +71,9 @@ class SecretManager(AbsAws):
         return None
 
     def get_parameters(self, parameter_name_list):
+        """
+        Return the parameter value from AWS SSM Parameter Store
+        """
         parameter_client = self.get_session().client('ssm')
         # return a dict of parameter and value pairs
         response = {parameter['Name']: parameter['Value'] for parameter in parameter_client.get_parameters(Names=parameter_name_list, WithDecryption=True)['Parameters']}
@@ -61,7 +81,6 @@ class SecretManager(AbsAws):
         response.update({parameter_name: None for parameter_name in parameter_name_list if parameter_name not in response})
         return response
 
-#################### SNS ####################
 class SNS(AbsAws):
     def __init__(self, aws_account_id=None, aws_region=None, for_testing=False):
         self.adding_testing_message = "[[IGNORE THIS MESSAGE, IT'S FOR TESTING]] >>>>> " if for_testing else ""
@@ -69,6 +88,9 @@ class SNS(AbsAws):
         self.aws_account_id = os.environ.get("AWS_ACCOUNT_ID","") if aws_account_id is None else aws_account_id
         
     def publish(self, topic_name, message):
+        """
+        publish message to SNS topic with the topic_name
+        """
         # get the current call's account id if it's not provided
         if self.aws_account_id is None or self.aws_account_id == "":
             self.aws_account_id = self.get_session().client('sts').get_caller_identity()['Account']
@@ -81,7 +103,6 @@ class SNS(AbsAws):
         )
         return response['MessageId']
 
-#################### CloudWatch ####################
 class CloudWatch(AbsAws):
     def __init__(self, for_testing=False):
         if for_testing:
@@ -91,7 +112,7 @@ class CloudWatch(AbsAws):
         
         self.unsure_log_stream_exist = True
         
-    def if_log_group_exists(self, log_group_name):
+    def _if_log_group_exists(self, log_group_name):
         log_client = self.get_session().client('logs')
         log_group_response = log_client.describe_log_groups(
             logGroupNamePrefix=log_group_name,
@@ -99,7 +120,7 @@ class CloudWatch(AbsAws):
         )
         return len(log_group_response['logGroups']) > 0
     
-    def if_log_stream_exists(self, log_group_name, log_stream_name):
+    def _if_log_stream_exists(self, log_group_name, log_stream_name):
         log_client = self.get_session().client('logs')
         log_stream_response = log_client.describe_log_streams(
             logGroupName=log_group_name,
@@ -109,12 +130,16 @@ class CloudWatch(AbsAws):
         return len(log_stream_response['logStreams']) > 0
     
     def ensure_log_group_stream_exist(self, log_group_name, log_stream_name,retention_in_days=10):
+        """
+        The client should call this function before calling put_log_events() at the first time.
+        The function will create the log group and log stream if they don't exist and apply the retention policy.
+        """
         if self.unsure_log_stream_exist:
-            if_log_group_exists = self.if_log_group_exists(log_group_name)
+            if_log_group_exists = self._if_log_group_exists(log_group_name)
             if_log_stream_exists = False
             
             if if_log_group_exists:
-                if_log_stream_exists = self.if_log_stream_exists(log_group_name, log_stream_name)
+                if_log_stream_exists = self._if_log_stream_exists(log_group_name, log_stream_name)
             
             if not if_log_stream_exists or not if_log_group_exists:
                 log_client = self.get_session().client('logs')
@@ -126,7 +151,7 @@ class CloudWatch(AbsAws):
                     )
                     # check if the log group is created every 100 milliseconds for 2 seconds
                     for i in range(check_counter):
-                        if self.if_log_group_exists(log_group_name):
+                        if self._if_log_group_exists(log_group_name):
                             break
                         time.sleep(0.1)
                     
@@ -147,17 +172,22 @@ class CloudWatch(AbsAws):
                     )
                     # check if the log group is created every 100 milliseconds for 2 seconds
                     for i in range(check_counter):
-                        if self.if_log_stream_exists(log_group_name, log_stream_name):
+                        if self._if_log_stream_exists(log_group_name, log_stream_name):
                             break
                         time.sleep(0.1)
 
             self.unsure_log_stream_exist = False
     
     def put_log_event(self, log_group_name, log_stream_name, message):
-        # create a single log event as a list
+        """
+        Add a single log event
+        """
         return self.put_log_events_list(log_group_name, log_stream_name, [message])
     
     def put_log_events_list(self, log_group_name, log_stream_name, message_list):
+        """
+        Add a list of log events
+        """
         # get the current timestamp
         timestamp = int(round(time.time() * 1000))
         # loop the message_list, add the timestamp to each message
@@ -204,6 +234,9 @@ class CloudWatch(AbsAws):
         return response['nextSequenceToken']
 
     def put_metric(self,namespace,name,value,unit=None,timestamp=None,dimension_dict_list=None):
+        """
+        Add a single metric
+        """
         metric_data = {
             'MetricName':name,
             'Value': value
@@ -217,6 +250,11 @@ class CloudWatch(AbsAws):
         self.put_metric_list(namespace, [metric_data])
 
     def put_metric_list(self,namespace,metric_data_list):
+        """
+        Add a list of metrics. Each metric is a dictionary with the following keys:
+        Must Have: MetricName, Value
+        Optional: Unit, Dimensions, Timestamp
+        """
         metric_client = self.get_session().client('cloudwatch')
         metric_client.put_metric_data(
             Namespace=namespace,
@@ -225,6 +263,12 @@ class CloudWatch(AbsAws):
 
 class AppConfig(AbsAws):
     def __init__(self, application, app_profile, environment, cached_seconds=2):
+        """
+        Need three ids(or name) to crate a AppConfig instance:
+        - application
+        - app_profile
+        - environment
+        """
         self.application = application
         self.app_profile = app_profile
         self.environment = environment
@@ -237,22 +281,22 @@ class AppConfig(AbsAws):
         self.last_config = None
         self.client = None
     
-    def load_client(self):
+    def _load_client(self):
         if self.client is None:
             self.client = self.get_session().client("appconfigdata")
         return self.client
     
-    def pull_config(self):
+    def _pull_config(self):
         try:
             if not self.config_token or datetime.now() >= self.token_expiration_time:
-                start_session_response = self.load_client().start_configuration_session(
+                start_session_response = self._load_client().start_configuration_session(
                     ApplicationIdentifier=self.application,
                     EnvironmentIdentifier=self.environment,
                     ConfigurationProfileIdentifier=self.app_profile
                 )
                 self.config_token = start_session_response["InitialConfigurationToken"]
 
-            get_config_response = self.load_client().get_latest_configuration(
+            get_config_response = self._load_client().get_latest_configuration(
                 ConfigurationToken=self.config_token
             )
             self.config_token = get_config_response["NextPollConfigurationToken"]
@@ -272,9 +316,12 @@ class AppConfig(AbsAws):
             return (None, f"JSON Decode Error: {error.msg}")
 
     def get_config(self):
+        """
+        Return the cached config as a dict within the cached time. If the cached time is expired, call _pull_config() to get the latest config.
+        """
         if self.last_retrieved == None or datetime.now() - self.last_retrieved > timedelta(seconds=self.cached_seconds):
             self.last_retrieved = datetime.now()
-            config_with_code = self.pull_config()
+            config_with_code = self._pull_config()
             if config_with_code[1] != None:
                 return {"error": config_with_code[1]}
             else:
