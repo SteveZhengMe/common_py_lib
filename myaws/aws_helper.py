@@ -10,7 +10,7 @@ Classes list:
 import json
 import os
 import time
-import boto3, botocore
+import boto3, botocore # type: ignore
 import re
 from datetime import datetime, timedelta
 
